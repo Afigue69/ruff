@@ -7151,18 +7151,18 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         expected_fields: Option<&[(Name, Type<'db>)]>,
     ) -> Option<Type<'db>> {
         let expected_fields = expected_fields?;
-        let DefinitionKind::DictKeyAssignment(assignment) = definition.kind(self.db()) else {
-            return None;
+        let value = match definition.kind(self.db()) {
+            DefinitionKind::DictKeyAssignment(assignment) => assignment.value(self.module()),
+            DefinitionKind::Assignment(assignment) => assignment.value(self.module()),
+            DefinitionKind::AnnotatedAssignment(assignment) => assignment.value(self.module())?,
+            _ => return None,
         };
 
         let expected_ty = expected_fields
             .iter()
             .find_map(|(field, ty)| (field == key).then_some(*ty))?;
 
-        Some(self.infer_maybe_standalone_expression(
-            assignment.value(self.module()),
-            TypeContext::new(Some(expected_ty)),
-        ))
+        Some(self.infer_maybe_standalone_expression(value, TypeContext::new(Some(expected_ty))))
     }
 
     /// Infer the variadic argument types needed for call binding and emit the shared diagnostics

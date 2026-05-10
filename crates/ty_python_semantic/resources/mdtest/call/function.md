@@ -1712,7 +1712,25 @@ def _(args_tuple: tuple[int, int], args_union: tuple[int] | tuple[int, int], kwa
 The same contextual inference should apply to overloaded calls for each matching overload:
 
 ```py
+from collections.abc import Mapping
+from enum import Enum
 from typing import Any, Literal, TypedDict, overload
+
+class Header(str, Enum):
+    REQUEST_ID = "x-request-id"
+
+def with_headers(*, extra_headers: Mapping[str, str] | None = None) -> None: ...
+def valid_headers(request_id: str) -> None:
+    kwargs = {
+        "extra_headers": {Header.REQUEST_ID: request_id},
+    }
+    with_headers(**kwargs)
+
+def invalid_headers() -> None:
+    kwargs = {
+        "extra_headers": {Header.REQUEST_ID: 1},
+    }
+    with_headers(**kwargs)  # error: [invalid-argument-type]
 
 class InputMessage(TypedDict):
     role: Literal["user"]
@@ -1724,8 +1742,23 @@ def create(*, input: list[InputMessage]) -> int: ...
 def create(*, input: str) -> str: ...
 def create(**kwargs: Any) -> object: ...
 def ok(content: str) -> None:
-    kwargs: dict[str, Any] = {
+    kwargs = {
         "input": [{"role": "user", "content": content}],
     }
     reveal_type(create(**kwargs))  # revealed: int
+
+def ok_subscript(content: str) -> None:
+    kwargs = {}
+    kwargs["input"] = [{"role": "user", "content": content}]
+    reveal_type(create(**kwargs))  # revealed: int
+
+def ok_annotated_subscript(content: str) -> None:
+    kwargs = {}
+    kwargs["input"]: object = [{"role": "user", "content": content}]
+    reveal_type(create(**kwargs))  # revealed: int
+
+def bad_subscript() -> None:
+    kwargs = {}
+    kwargs["input"] = [{"role": "user", "content": 1}]
+    create(**kwargs)  # error: [no-matching-overload]
 ```
