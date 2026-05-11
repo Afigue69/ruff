@@ -1746,6 +1746,15 @@ def invalid_key_type() -> None:
     kwargs: dict[int | str, Any] = {"x": 1, 1: 2}
     takes_x(**kwargs)  # error: [invalid-argument-type]
 
+@overload
+def overloaded_context(a: int, *, x: list[int]) -> int: ...
+@overload
+def overloaded_context(a: str, *, x: list[Any]) -> str: ...
+def overloaded_context(a: object, **kwargs: object) -> object: ...
+def invalid_overload_context() -> None:
+    kwargs: dict[str, object] = {"x": ["s"]}
+    overloaded_context(1, **kwargs)  # error: [no-matching-overload]
+
 class InputMessage(TypedDict):
     role: Literal["user"]
     content: str

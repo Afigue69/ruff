@@ -50,7 +50,9 @@ use crate::types::signatures::{
     PartialApplication, PartialSignatureApplication,
 };
 use crate::types::tuple::{TupleLength, TupleSpec, TupleType};
-use crate::types::typed_dict::extract_unpacked_typed_dict_keys_from_value_type;
+use crate::types::typed_dict::{
+    extract_unpacked_typed_dict_keys_from_value_type, synthesized_typed_dict_type_from_fields,
+};
 use crate::types::typevar::BoundTypeVarIdentity;
 use crate::types::{
     BoundMethodType, BoundTypeVarInstance, CallableType, CallableTypes, ClassLiteral,
@@ -4993,8 +4995,7 @@ impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
                     argument_index,
                     adjusted_argument_index,
                     argument,
-                    // Splatted arguments are inferred without type context.
-                    argument_types.get_default().unwrap_or(Type::unknown()),
+                    self.keyword_variadic_argument_type(argument_index, argument_types),
                 ),
                 _ => {
                     // If the argument isn't splatted, just check its type directly.
@@ -5034,6 +5035,37 @@ impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
             // Here, no arguments match the `ParamSpec` parameter, but `P` specializes to `(x: int)`,
             // so we need to perform a sub-call with no arguments.
             self.evaluate_paramspec_sub_call(constraints, None, paramspec);
+        }
+    }
+
+    /// Return the `**kwargs` type inferred for this overload's matched keyword fields.
+    fn keyword_variadic_argument_type(
+        &self,
+        argument_index: usize,
+        argument_types: &CallArgumentTypes<'db>,
+    ) -> Type<'db> {
+        let parameters = self.signature.parameters();
+        let context_ty = synthesized_typed_dict_type_from_fields(
+            self.db,
+            self.argument_matches[argument_index]
+                .parameters
+                .iter()
+                .filter_map(|parameter_index| {
+                    let parameter = &parameters[*parameter_index];
+                    if parameter.is_keyword_variadic() {
+                        None
+                    } else {
+                        parameter
+                            .keyword_name()
+                            .map(|name| (name.clone(), parameter.annotated_type()))
+                    }
+                }),
+        );
+
+        if let Some(context_ty) = context_ty {
+            argument_types.get_for_declared_type(context_ty)
+        } else {
+            argument_types.get_default().unwrap_or(Type::unknown())
         }
     }
 

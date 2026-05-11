@@ -89,7 +89,7 @@ use crate::types::subclass_of::SubclassOfInner;
 use crate::types::tuple::promotion::TupleSizePromotionConstraints;
 use crate::types::tuple::{Tuple, TupleLength, TupleSpecBuilder, TupleType};
 use crate::types::type_alias::{ManualPEP695TypeAliasType, PEP695TypeAliasType};
-use crate::types::typed_dict::{TypedDictSchema, functional_typed_dict_field};
+use crate::types::typed_dict::synthesized_typed_dict_type_from_fields;
 use crate::types::typevar::{BoundTypeVarIdentity, TypeVarConstraints, TypeVarIdentity};
 use crate::types::{
     BoundTypeVarInstance, CallDunderError, CallableBinding, CallableType, CallableTypes, ClassType,
@@ -5211,7 +5211,11 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                         arg: None, value, ..
                     },
                 ) => {
-                    let mut expected_fields = FxHashMap::default();
+                    // Keep `**kwargs` contexts per overload; losing overloads must not widen the
+                    // fields used by viable overloads.
+                    let mut seen = FxHashSet::default();
+                    let teardown = self.setup_expression_cache();
+
                     for (overload, binding) in &overloads_with_binding {
                         let argument_index = if binding.bound_type.is_some() {
                             argument_index + 1
@@ -5224,6 +5228,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                             continue;
                         };
 
+                        let mut expected_fields = FxHashMap::default();
                         for parameter_index in &argument_matches.parameters {
                             let parameter = &overload.signature.parameters()[*parameter_index];
                             if parameter.is_keyword_variadic() {
@@ -5231,29 +5236,31 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                             }
 
                             if let Some(name) = parameter.keyword_name() {
-                                let annotated_type = parameter.annotated_type();
-                                expected_fields
-                                    .entry(name.clone())
-                                    .and_modify(|existing| {
-                                        *existing = UnionType::from_two_elements(
-                                            db,
-                                            *existing,
-                                            annotated_type,
-                                        );
-                                    })
-                                    .or_insert(annotated_type);
+                                expected_fields.insert(name.clone(), parameter.annotated_type());
                             }
                         }
-                    }
 
-                    if !expected_fields.is_empty()
-                        && let Some(ty) = self.speculate().try_narrow_dict_kwargs(
+                        let Some(context_ty) = synthesized_typed_dict_type_from_fields(
+                            db,
+                            expected_fields.iter().map(|(name, ty)| (name.clone(), *ty)),
+                        ) else {
+                            continue;
+                        };
+                        if !seen.insert(context_ty) {
+                            continue;
+                        }
+
+                        if let Some(ty) = self.speculate().try_narrow_dict_kwargs(
                             self.expression_type(value),
                             keyword,
                             Some(&expected_fields),
-                        )
-                    {
-                        argument_types.insert(TypeContext::default(), ty);
+                        ) {
+                            argument_types.insert(context_ty, ty);
+                        }
+                    }
+
+                    if teardown {
+                        self.teardown_expression_cache();
                     }
 
                     continue;
@@ -7121,17 +7128,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 });
 
         if has_valid_keyword_keys && expected_fields.is_some() {
-            let schema = elements
-                .iter()
-                .cloned()
-                .map(|(name, ty)| {
-                    (
-                        name,
-                        functional_typed_dict_field(ty, TypeQualifiers::empty(), true),
-                    )
-                })
-                .collect::<TypedDictSchema<'db>>();
-            let typed_dict = Type::TypedDict(TypedDictType::from_schema_items(db, schema));
+            let typed_dict = synthesized_typed_dict_type_from_fields(db, elements.iter().cloned())?;
 
             return Some(IntersectionType::from_elements(
                 db,
